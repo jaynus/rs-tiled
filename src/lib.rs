@@ -1,3 +1,5 @@
+#![warn(rust_2018_idioms, clippy::all)]
+
 extern crate base64;
 extern crate libflate;
 extern crate xml;
@@ -31,6 +33,7 @@ macro_rules! get_attrs {
             $(let mut $oVar = None;)*
             $(let mut $var = None;)*
             for attr in $attrs.iter() {
+            #[allow(clippy::single_match)]
                 match attr.name.local_name.as_ref() {
                     $($oName => $oVar = $oMethod(attr.value.clone()),)*
                     $($name => $var = $method(attr.value.clone()),)*
@@ -85,7 +88,7 @@ impl FromStr for Colour {
     type Err = ParseTileError;
 
     fn from_str(s: &str) -> Result<Colour, ParseTileError> {
-        let s = if s.starts_with("#") { &s[1..] } else { s };
+        let s = if s.starts_with('#') { &s[1..] } else { s };
         if s.len() != 6 {
             return Err(ParseTileError::ColourError);
         }
@@ -119,7 +122,7 @@ pub enum TiledError {
 }
 
 impl fmt::Display for TiledError {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         match *self {
             TiledError::MalformedAttributes(ref s) => write!(fmt, "{}", s),
             TiledError::DecompressingError(ref e) => write!(fmt, "{}", e),
@@ -143,12 +146,12 @@ impl std::error::Error for TiledError {
             TiledError::Other(ref s) => s.as_ref(),
         }
     }
-    fn cause(&self) -> Option<&std::error::Error> {
+    fn cause(&self) -> Option<&dyn std::error::Error> {
         match *self {
             TiledError::MalformedAttributes(_) => None,
-            TiledError::DecompressingError(ref e) => Some(e as &std::error::Error),
-            TiledError::Base64DecodingError(ref e) => Some(e as &std::error::Error),
-            TiledError::XmlDecodingError(ref e) => Some(e as &std::error::Error),
+            TiledError::DecompressingError(ref e) => Some(e as &dyn std::error::Error),
+            TiledError::Base64DecodingError(ref e) => Some(e as &dyn std::error::Error),
+            TiledError::XmlDecodingError(ref e) => Some(e as &dyn std::error::Error),
             TiledError::PrematureEnd(_) => None,
             TiledError::Other(_) => None,
         }
@@ -184,9 +187,7 @@ impl PropertyValue {
             },
             "color" if value.len() > 1 => match u32::from_str_radix(&value[1..], 16) {
                 Ok(color) => Ok(PropertyValue::ColorValue(color)),
-                Err(_) => Err(TiledError::Other(format!(
-                    "Improperly formatted color property"
-                ))),
+                Err(_) => Err(TiledError::Other("Improperly formatted color property".to_string())),
             },
             "string" => Ok(PropertyValue::StringValue(value)),
             _ => Err(TiledError::Other(format!(
@@ -214,7 +215,7 @@ fn parse_properties<R: Read>(parser: &mut EventReader<R>) -> Result<Properties, 
                 ],
                 TiledError::MalformedAttributes("property must have a name and a value".to_string())
             );
-            let t = t.unwrap_or("string".into());
+            let t = t.unwrap_or_else(|| "string".into());
 
             p.insert(k, try!(PropertyValue::new(t, v)));
             Ok(())
@@ -246,7 +247,8 @@ impl Map {
         attrs: Vec<OwnedAttribute>,
         map_path: Option<&Path>,
     ) -> Result<Map, TiledError> {
-        let (c, (v, o, w, h, tw, th)) = get_attrs!(
+
+        let (background_colour, (version, orientation, width, height, tile_width, tile_height)) = get_attrs!(
             attrs,
             optionals: [
                 ("backgroundcolor", colour, |v:String| v.parse().ok()),
@@ -274,7 +276,7 @@ impl Map {
                 Ok(())
             },
             "layer" => |attrs| {
-                layers.push(try!(Layer::new(parser, attrs, w, layer_index)));
+                layers.push(try!(Layer::new(parser, attrs, width, layer_index)));
                 layer_index += 1;
                 Ok(())
             },
@@ -294,18 +296,18 @@ impl Map {
             },
         });
         Ok(Map {
-            version: v,
-            orientation: o,
-            width: w,
-            height: h,
-            tile_width: tw,
-            tile_height: th,
+            version,
+            orientation,
+            width,
+            height,
+            tile_width,
+            tile_height,
             tilesets,
             layers,
             image_layers,
             object_groups,
             properties,
-            background_colour: c,
+            background_colour,
         })
     }
 
@@ -372,9 +374,9 @@ impl Tileset {
 
     fn new_internal<R: Read>(
         parser: &mut EventReader<R>,
-        attrs: &Vec<OwnedAttribute>,
+        attrs: &[OwnedAttribute],
     ) -> Result<Tileset, TiledError> {
-        let ((spacing, margin), (first_gid, name, width, height)) = get_attrs!(
+        let ((spacing, margin), (first_gid, name, tile_width, tile_height)) = get_attrs!(
            attrs,
            optionals: [
                 ("spacing", spacing, |v:String| v.parse().ok()),
@@ -403,19 +405,19 @@ impl Tileset {
         });
 
         Ok(Tileset {
-            first_gid: first_gid,
-            name: name,
-            tile_width: width,
-            tile_height: height,
+            first_gid,
+            name,
+            tile_width,
+            tile_height,
             spacing: spacing.unwrap_or(0),
             margin: margin.unwrap_or(0),
-            images: images,
-            tiles: tiles,
+            images,
+            tiles,
         })
     }
 
     fn new_reference(
-        attrs: &Vec<OwnedAttribute>,
+        attrs: &[OwnedAttribute],
         map_path: Option<&Path>,
     ) -> Result<Tileset, TiledError> {
         let ((), (first_gid, source)) = get_attrs!(
@@ -428,7 +430,7 @@ impl Tileset {
             TiledError::MalformedAttributes("tileset must have a firstgid, name tile width and height with correct types".to_string())
         );
 
-        let tileset_path = map_path.ok_or(TiledError::Other("Maps with external tilesets must know their file location.  See parse_with_path(Path).".to_string()))?.with_file_name(source);
+        let tileset_path = map_path.ok_or_else( ||TiledError::Other("Maps with external tilesets must know their file location.  See parse_with_path(Path).".to_string()))?.with_file_name(source);
         let file = File::open(&tileset_path).map_err(|_| {
             TiledError::Other(format!(
                 "External tileset file not found: {:?}",
@@ -466,9 +468,9 @@ impl Tileset {
     fn parse_external_tileset<R: Read>(
         first_gid: u32,
         parser: &mut EventReader<R>,
-        attrs: &Vec<OwnedAttribute>,
+        attrs: &[OwnedAttribute],
     ) -> Result<Tileset, TiledError> {
-        let ((spacing, margin), (name, width, height)) = get_attrs!(
+        let ((spacing, margin), (name, tile_width, tile_height)) = get_attrs!(
             attrs,
             optionals: [
                 ("spacing", spacing, |v:String| v.parse().ok()),
@@ -496,14 +498,14 @@ impl Tileset {
         });
 
         Ok(Tileset {
-            first_gid: first_gid,
-            name: name,
-            tile_width: width,
-            tile_height: height,
+            first_gid,
+            name,
+            tile_width,
+            tile_height,
             spacing: spacing.unwrap_or(0),
             margin: margin.unwrap_or(0),
-            images: images,
-            tiles: tiles,
+            images,
+            tiles,
         })
     }
 }
@@ -600,7 +602,7 @@ impl Image {
         parser: &mut EventReader<R>,
         attrs: Vec<OwnedAttribute>,
     ) -> Result<Image, TiledError> {
-        let (c, (s, w, h)) = get_attrs!(
+        let (transparent_colour, (source, width, height)) = get_attrs!(
             attrs,
             optionals: [
                 ("trans", trans, |v:String| v.parse().ok()),
@@ -615,10 +617,10 @@ impl Image {
 
         parse_tag!(parser, "image", { "" => |_| Ok(()) });
         Ok(Image {
-            source: s,
-            width: w,
-            height: h,
-            transparent_colour: c,
+            source,
+            width,
+            height,
+            transparent_colour,
         })
     }
 }
@@ -642,7 +644,7 @@ impl Layer {
         width: u32,
         layer_index: u32,
     ) -> Result<Layer, TiledError> {
-        let ((o, v), n) = get_attrs!(
+        let ((o, v), name) = get_attrs!(
             attrs,
             optionals: [
                 ("opacity", opacity, |v:String| v.parse().ok()),
@@ -667,11 +669,11 @@ impl Layer {
         });
 
         Ok(Layer {
-            name: n,
+            name,
             opacity: o.unwrap_or(1.0),
             visible: v.unwrap_or(true),
-            tiles: tiles,
-            properties: properties,
+            tiles,
+            properties,
             layer_index,
         })
     }
@@ -751,7 +753,7 @@ impl ObjectGroup {
         attrs: Vec<OwnedAttribute>,
         layer_index: Option<u32>,
     ) -> Result<ObjectGroup, TiledError> {
-        let ((o, v, c, n), ()) = get_attrs!(
+        let ((o, v, colour, n), ()) = get_attrs!(
             attrs,
             optionals: [
                 ("opacity", opacity, |v:String| v.parse().ok()),
@@ -770,11 +772,11 @@ impl ObjectGroup {
             },
         });
         Ok(ObjectGroup {
-            name: n.unwrap_or(String::new()),
+            name: n.unwrap_or_default(),
             opacity: o.unwrap_or(1.0),
             visible: v.unwrap_or(true),
-            objects: objects,
-            colour: c,
+            objects,
+            colour,
             layer_index,
         })
     }
@@ -807,7 +809,8 @@ impl Object {
         parser: &mut EventReader<R>,
         attrs: Vec<OwnedAttribute>,
     ) -> Result<Object, TiledError> {
-        let ((id, gid, n, t, w, h, v, r), (x, y)) = get_attrs!(
+
+        let ((id, gid, n, t, width, height, visible, rotation), (x, y)) = get_attrs!(
             attrs,
             optionals: [
                 ("id", id, |v:String| v.parse().ok()),
@@ -825,22 +828,22 @@ impl Object {
             ],
             TiledError::MalformedAttributes("objects must have an x and a y number".to_string())
         );
-        let v = v.unwrap_or(true);
-        let w = w.unwrap_or(0f32);
-        let h = h.unwrap_or(0f32);
-        let r = r.unwrap_or(0f32);
+        let visible = visible.unwrap_or(true);
+        let width = width.unwrap_or(0f32);
+        let height = height.unwrap_or(0f32);
+        let rotation = rotation.unwrap_or(0f32);
         let id = id.unwrap_or(0u32);
         let gid = gid.unwrap_or(0u32);
-        let n = n.unwrap_or(String::new());
-        let t = t.unwrap_or(String::new());
+        let n: String = n.unwrap_or_default();
+        let t: String = t.unwrap_or_default();
         let mut shape = None;
         let mut properties = HashMap::new();
 
         parse_tag!(parser, "object", {
             "ellipse" => |_| {
                 shape = Some(ObjectShape::Ellipse {
-                    width: w,
-                    height: h,
+                    width,
+                    height,
                 });
                 Ok(())
             },
@@ -859,21 +862,21 @@ impl Object {
         });
 
         let shape = shape.unwrap_or(ObjectShape::Rect {
-            width: w,
-            height: h,
+            width,
+            height,
         });
 
         Ok(Object {
-            id: id,
-            gid: gid,
+            id,
+            gid,
+            x,
+            y,
+            rotation,
+            visible,
+            shape,
+            properties,
             name: n.clone(),
             obj_type: t.clone(),
-            x: x,
-            y: y,
-            rotation: r,
-            visible: v,
-            shape: shape,
-            properties: properties,
         })
     }
 
@@ -887,7 +890,7 @@ impl Object {
             TiledError::MalformedAttributes("A polyline must have points".to_string())
         );
         let points = try!(Object::parse_points(s));
-        Ok(ObjectShape::Polyline { points: points })
+        Ok(ObjectShape::Polyline { points })
     }
 
     fn new_polygon(attrs: Vec<OwnedAttribute>) -> Result<ObjectShape, TiledError> {
@@ -900,7 +903,7 @@ impl Object {
             TiledError::MalformedAttributes("A polygon must have points".to_string())
         );
         let points = try!(Object::parse_points(s));
-        Ok(ObjectShape::Polygon { points: points })
+        Ok(ObjectShape::Polygon { points })
     }
 
     fn parse_points(s: String) -> Result<Vec<(f32, f32)>, TiledError> {
@@ -943,8 +946,8 @@ impl Frame {
             TiledError::MalformedAttributes("A frame must have tileid and duration".to_string())
         );
         Ok(Frame {
-            tile_id: tile_id,
-            duration: duration,
+            tile_id,
+            duration,
         })
     }
 }
@@ -977,35 +980,35 @@ fn parse_data<R: Read>(
 
     match (e, c) {
         (None, None) => {
-            return Err(TiledError::Other(
+            Err(TiledError::Other(
                 "XML format is currently not supported".to_string(),
             ))
         }
         (Some(e), None) => match e.as_ref() {
-            "base64" => return parse_base64(parser).map(|v| convert_to_u32(&v, width)),
-            "csv" => return decode_csv(parser),
-            e => return Err(TiledError::Other(format!("Unknown encoding format {}", e))),
+            "base64" => parse_base64(parser).map(|v| convert_to_u32(&v, width)),
+            "csv" => decode_csv(parser),
+            e => Err(TiledError::Other(format!("Unknown encoding format {}", e))),
         },
         (Some(e), Some(c)) => match (e.as_ref(), c.as_ref()) {
             ("base64", "zlib") => {
-                return parse_base64(parser)
-                    .and_then(decode_zlib)
+                parse_base64(parser)
+                    .and_then(&decode_zlib)
                     .map(|v| convert_to_u32(&v, width))
             }
             ("base64", "gzip") => {
-                return parse_base64(parser)
-                    .and_then(decode_gzip)
+                parse_base64(parser)
+                    .and_then(&decode_gzip)
                     .map(|v| convert_to_u32(&v, width))
             }
             (e, c) => {
-                return Err(TiledError::Other(format!(
+                Err(TiledError::Other(format!(
                     "Unknown combination of {} encoding and {} compression",
                     e, c
                 )))
             }
         },
-        _ => return Err(TiledError::Other("Missing encoding format".to_string())),
-    };
+        _ => Err(TiledError::Other("Missing encoding format".to_string())),
+    }
 }
 
 fn parse_base64<R: Read>(parser: &mut EventReader<R>) -> Result<Vec<u8>, TiledError> {
@@ -1027,7 +1030,7 @@ fn parse_base64<R: Read>(parser: &mut EventReader<R>) -> Result<Vec<u8>, TiledEr
 fn decode_zlib(data: Vec<u8>) -> Result<Vec<u8>, TiledError> {
     use libflate::zlib::Decoder;
     let mut zd =
-        Decoder::new(BufReader::new(&data[..])).map_err(|e| TiledError::DecompressingError(e))?;
+        Decoder::new(BufReader::new(&data[..])).map_err(TiledError::DecompressingError)?;
     let mut data = Vec::new();
     match zd.read_to_end(&mut data) {
         Ok(_v) => {}
@@ -1039,11 +1042,11 @@ fn decode_zlib(data: Vec<u8>) -> Result<Vec<u8>, TiledError> {
 fn decode_gzip(data: Vec<u8>) -> Result<Vec<u8>, TiledError> {
     use libflate::gzip::Decoder;
     let mut zd =
-        Decoder::new(BufReader::new(&data[..])).map_err(|e| TiledError::DecompressingError(e))?;
+        Decoder::new(BufReader::new(&data[..])).map_err(TiledError::DecompressingError)?;
 
     let mut data = Vec::new();
     zd.read_to_end(&mut data)
-        .map_err(|e| TiledError::DecompressingError(e))?;
+        .map_err(TiledError::DecompressingError)?;
     Ok(data)
 }
 
@@ -1075,16 +1078,16 @@ fn decode_csv<R: Read>(parser: &mut EventReader<R>) -> Result<Vec<Vec<u32>>, Til
     }
 }
 
-fn convert_to_u32(all: &Vec<u8>, width: u32) -> Vec<Vec<u32>> {
+fn convert_to_u32(all: &[u8], width: u32) -> Vec<Vec<u32>> {
     let mut data = Vec::new();
     for chunk in all.chunks((width * 4) as usize) {
         let mut row = Vec::new();
         for i in 0..width {
             let start: usize = i as usize * 4;
-            let n = ((chunk[start + 3] as u32) << 24)
-                + ((chunk[start + 2] as u32) << 16)
-                + ((chunk[start + 1] as u32) << 8)
-                + chunk[start] as u32;
+            let n = (u32::from(chunk[start + 3]) << 24)
+                + (u32::from(chunk[start + 2]) << 16)
+                + (u32::from(chunk[start + 1]) << 8)
+                + u32::from(chunk[start]);
             row.push(n);
         }
         data.push(row);
